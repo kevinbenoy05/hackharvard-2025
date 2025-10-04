@@ -31,3 +31,6 @@ backend/temp_storage_*.json
 backend/*session*.json
 backend/*.json.bak
 backend/*.bak
+
+chrome-profile/
+

@@ -427,7 +427,7 @@ class ParallelExecutionResult:
 @dataclass
 class BrowserConfig:
     """Browser configuration for agents."""
-
+    cdp_url: Optional[str] = None  # URL to connect to existing Chrome instance
     headless: bool = True
     storage_state: Optional[str] = None
     separate_profiles: bool = True
@@ -521,7 +521,14 @@ class ParallelBrowserSDK:
 
     def _create_browser(self, config: BrowserConfig, agent_id: str) -> Browser:
         """Create browser instance based on configuration."""
-
+        # NEW: Check if we should connect to existing Chrome session
+        print("Checking for open browser...")
+        if hasattr(config, 'cdp_url') and config.cdp_url:
+            return Browser(
+                cdp_url=config.cdp_url,  # Connect to existing Chrome
+                headless=False,  # Must be False when using CDP
+            )
+        print("No open browser found, launching new guest window...")
         if config.storage_state:
             temp_profile_dir = tempfile.mkdtemp(prefix="tmp-browser-use-profile-")
             config.temp_user_data_dirs.append(temp_profile_dir)
@@ -1404,6 +1411,9 @@ Respond with ONLY the JSON, no additional text."""
         max_steps: int = 70,
         headless: bool = True,
         enable_parallel_agents: bool = True,
+        use_existing_chrome: bool = False,  # NEW: Flag to use existing Chrome session
+        cdp_url: str = "http://localhost:9222", # NEW: CDP URL for existing Chrome
+        
     ) -> Dict[str, Any]:
         """Run a browser task with conversational clarification.
         
@@ -1423,7 +1433,7 @@ Respond with ONLY the JSON, no additional text."""
         known_facts: List[str] = []  # Track facts learned from tools
 
         # Clarification rounds (skip if NON_INTERACTIVE)
-        total_rounds = 0 if _NON_INTERACTIVE else 3
+        total_rounds = 0 if _NON_INTERACTIVE else 2
         for round_num in range(1, total_rounds + 1):
             # Build context with previous Q&As and known facts
             context_parts = [initial_query]
@@ -1484,18 +1494,29 @@ Respond with ONLY the JSON, no additional text."""
                     print()
 
         # Limit max_steps to avoid memory issues
-        adjusted_max_steps = min(max_steps, 20)  # Cap at 20 to prevent memory overflow
+        adjusted_max_steps = min(max_steps, 15)  # Cap at 40 to prevent memory overflow
         if not _QUIET_MODE and adjusted_max_steps != max_steps:
             print(f"⚙️  Limited max steps to {adjusted_max_steps} to prevent memory issues\n")
 
         # Execute using existing SDK with smart mode enabled
-        result = await run_parallel_tasks(
-            task_descriptions=task_descriptions,
-            max_steps=adjusted_max_steps,
-            headless=headless,
-            llm_api_key=self.sdk.llm_api_key,
-            enable_smart_mode=True,  # Always use smart mode for conversational agent
-        )
+        if use_existing_chrome:
+            config = BrowserConfig(
+                cdp_url=cdp_url,
+                headless=False,  # Must be False when using CDP
+                separate_profiles=False
+            )
+            result = await self.sdk.execute_parallel(
+                tasks=[ParallelTask(task_description=desc, max_steps=adjusted_max_steps) for desc in task_descriptions],
+                browser_config=config
+            )
+        else:
+            result = await run_parallel_tasks(
+                task_descriptions=task_descriptions,
+                max_steps=adjusted_max_steps,
+                headless=headless,
+                llm_api_key=self.sdk.llm_api_key,
+                enable_smart_mode=True,
+            )
 
         return {
             "original_query": initial_query,
@@ -1513,6 +1534,8 @@ async def run_conversational_task(
     headless: bool = True,
     llm_api_key: Optional[str] = None,
     enable_parallel_agents: bool = True,
+    use_existing_chrome: bool = False,  #  Flag to use existing Chrome session
+    cdp_url: str = "http://localhost:9222",  # CDP URL for existing Chrome
 ) -> Dict[str, Any]:
     """Convenience function to run a conversational browser task.
     
@@ -1536,7 +1559,7 @@ async def run_conversational_task(
     os.environ['GLOG_minloglevel'] = '2'
 
     agent = ConversationalBrowserAgent(llm_api_key=llm_api_key)
-    return await agent.run_conversational_task(initial_query, max_steps, headless, enable_parallel_agents)
+    return await agent.run_conversational_task(initial_query, max_steps, headless, enable_parallel_agents, use_existing_chrome, cdp_url)
 
 
 __all__ = [
