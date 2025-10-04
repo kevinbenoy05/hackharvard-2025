@@ -13,4 +13,5 @@ dependencies = [
     "openai",
     "python-dotenv",
     "sounddevice",
+    "websockets",
 ]

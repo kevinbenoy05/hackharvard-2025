@@ -141,6 +141,7 @@ dependencies = [
     { name = "openai" },
     { name = "python-dotenv" },
     { name = "sounddevice" },
+    { name = "websockets" },
 ]
 
 [package.metadata]
@@ -153,6 +154,7 @@ requires-dist = [
     { name = "openai" },
     { name = "python-dotenv" },
     { name = "sounddevice" },
+    { name = "websockets" },
 ]
 
 [[package]]
