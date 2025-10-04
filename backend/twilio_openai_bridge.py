@@ -13,8 +13,10 @@ from typing import Any
 
 import audioop
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-import websocket  # type: ignore  # from websocket-client package
+import websocket
+from dotenv import load_dotenv
 
+load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-realtime-preview-2024-12-17")
 
