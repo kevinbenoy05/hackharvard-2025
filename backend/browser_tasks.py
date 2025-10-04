@@ -356,7 +356,13 @@ async def speak_text(text: str) -> None:
             elif sys.platform == "linux":
                 subprocess.run(["mpg123", tmp_path], check=True)
             elif sys.platform == "win32":
-                subprocess.run(["start", tmp_path], shell=True, check=True)
+                try:
+                    # Use -nodisp to hide the ffplay window, -autoexit to close when done.
+                    subprocess.run(["ffplay", "-nodisp", "-autoexit", tmp_path], check=True, capture_output=True)
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    # Fallback if ffplay is not installed or fails
+                    print("INFO: 'ffplay' not found. Falling back to default media player. Install FFmpeg for direct audio playback.")
+                    subprocess.run(["start", tmp_path], shell=True, check=True)
         finally:
             # Clean up temp file
             try:
@@ -613,6 +619,7 @@ class ParallelBrowserSDK:
             agents = []
             for task in tasks:
                 browser = self._create_browser(browser_config, task.agent_id)
+                await browser.start()
                 agent = Agent(
                     task=task.task_description,
                     browser=browser,
@@ -629,7 +636,11 @@ class ParallelBrowserSDK:
             ]
 
             results = await asyncio.gather(*agent_tasks, return_exceptions=True)
-
+            for agent, task in agents:
+                try:
+                    await agent.browser.stop()
+                except Exception:
+                    pass
             end_time = asyncio.get_event_loop().time()
             total_time = end_time - start_time
 
@@ -1390,7 +1401,7 @@ Respond with ONLY the JSON, no additional text."""
     async def run_conversational_task(
         self,
         initial_query: str,
-        max_steps: int = 20,
+        max_steps: int = 70,
         headless: bool = True,
         enable_parallel_agents: bool = True,
     ) -> Dict[str, Any]:
