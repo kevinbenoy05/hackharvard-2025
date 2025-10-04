@@ -1,10 +1,12 @@
 import os
 import json
+import shutil
 import asyncio
 import inspect
+import tempfile
 import uuid
 from typing import List, Dict, Any, Optional, Union
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from dotenv import load_dotenv
 from browser_use import Agent, ChatGoogle, Browser
 
@@ -37,6 +39,7 @@ class BrowserConfig:
     storage_state: Optional[str] = None
     separate_profiles: bool = True
     profile_prefix: str = "temp_agent"
+    temp_user_data_dirs: List[str] = field(default_factory=list)
 
     def __post_init__(self):
         if self.storage_state and self.separate_profiles:
@@ -115,10 +118,12 @@ class ParallelBrowserSDK:
     def _create_browser(self, config: BrowserConfig, agent_id: str) -> Browser:
         """Create browser instance based on configuration"""
         if config.storage_state:
+            temp_profile_dir = tempfile.mkdtemp(prefix="tmp-browser-use-profile-")
+            config.temp_user_data_dirs.append(temp_profile_dir)
             return Browser(
                 headless=config.headless,
                 storage_state=config.storage_state,
-                user_data_dir=None
+                user_data_dir=temp_profile_dir
             )
 
         profile_dir = f"./{config.profile_prefix}_{agent_id}" if config.separate_profiles else None
@@ -145,64 +150,71 @@ class ParallelBrowserSDK:
         if browser_config is None:
             browser_config = BrowserConfig()
 
-        llm = self._create_llm()
-        start_time = asyncio.get_event_loop().time()
+        cleanup_dirs = browser_config.temp_user_data_dirs
 
-        # Create agents for all tasks
-        agents = []
-        for task in tasks:
-            browser = self._create_browser(browser_config, task.agent_id)
-            agent = Agent(
-                task=task.task_description,
-                browser=browser,
-                llm=llm
-            )
-            agents.append((agent, task))
+        try:
+            llm = self._create_llm()
+            start_time = asyncio.get_event_loop().time()
 
-        # Execute all agents in parallel
-        agent_tasks = [
-            agent.run(max_steps=task.max_steps)
-            for agent, task in agents
-        ]
+            # Create agents for all tasks
+            agents = []
+            for task in tasks:
+                browser = self._create_browser(browser_config, task.agent_id)
+                agent = Agent(
+                    task=task.task_description,
+                    browser=browser,
+                    llm=llm
+                )
+                agents.append((agent, task))
 
-        results = await asyncio.gather(*agent_tasks, return_exceptions=True)
+            # Execute all agents in parallel
+            agent_tasks = [
+                agent.run(max_steps=task.max_steps)
+                for agent, task in agents
+            ]
 
-        end_time = asyncio.get_event_loop().time()
-        total_time = end_time - start_time
+            results = await asyncio.gather(*agent_tasks, return_exceptions=True)
 
-        # Process results
-        execution_results = []
-        successful_count = 0
-        failed_count = 0
+            end_time = asyncio.get_event_loop().time()
+            total_time = end_time - start_time
 
-        for i, (result, (agent, task)) in enumerate(zip(results, agents)):
-            if isinstance(result, Exception):
-                execution_results.append(ParallelExecutionResult(
-                    task_id=task.agent_id,
-                    success=False,
-                    result=None,
-                    error=str(result),
-                    execution_time=total_time
-                ))
-                failed_count += 1
-            else:
-                execution_results.append(ParallelExecutionResult(
-                    task_id=task.agent_id,
-                    success=True,
-                    result=result,
-                    error=None,
-                    execution_time=total_time
-                ))
-                successful_count += 1
+            # Process results
+            execution_results = []
+            successful_count = 0
+            failed_count = 0
 
-        return {
-            'execution_results': execution_results,
-            'total_time': total_time,
-            'successful_count': successful_count,
-            'failed_count': failed_count,
-            'total_tasks': len(tasks),
-            'success_rate': successful_count / len(tasks) if tasks else 0
-        }
+            for i, (result, (agent, task)) in enumerate(zip(results, agents)):
+                if isinstance(result, Exception):
+                    execution_results.append(ParallelExecutionResult(
+                        task_id=task.agent_id,
+                        success=False,
+                        result=None,
+                        error=str(result),
+                        execution_time=total_time
+                    ))
+                    failed_count += 1
+                else:
+                    execution_results.append(ParallelExecutionResult(
+                        task_id=task.agent_id,
+                        success=True,
+                        result=result,
+                        error=None,
+                        execution_time=total_time
+                    ))
+                    successful_count += 1
+
+            return {
+                'execution_results': execution_results,
+                'total_time': total_time,
+                'successful_count': successful_count,
+                'failed_count': failed_count,
+                'total_tasks': len(tasks),
+                'success_rate': successful_count / len(tasks) if tasks else 0
+            }
+        finally:
+            for temp_dir in cleanup_dirs:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            browser_config.temp_user_data_dirs.clear()
 
 # Convenience functions for common use cases
 async def run_parallel_tasks(task_descriptions: List[str],
