@@ -60,7 +60,7 @@ def main() -> None:
                     "Go to https://httpbin.org/ip and get my IP",
                     "Go to https://httpbin.org/headers and get headers",
                 ],
-                headless=True,
+                headless=False,
             )
 
             print(f"Success rate: {result['success_rate']:.0%}")
@@ -90,7 +90,8 @@ def main() -> None:
             result = await run_conversational_task(
                 initial_query=initial_query,
                 max_steps=20,
-                headless=True,
+                headless=False,
+                enable_parallel_agents=False,
             )
 
             print("\n" + "="*80)
@@ -133,9 +134,16 @@ def main() -> None:
 
             # Speak the results
             if results_text_parts:
-                print("🔊 Speaking results...\n")
-                combined_results = " ".join(results_text_parts)
-                await speak_text(combined_results)
+                if results_text_parts:
+                    print("🔊 Speaking results...\n")
+                    combined_results = " ".join(results_text_parts)
+                    # FIX #2: Truncate the result if it's too long for the text-to-speech API.
+                    max_audio_length = 4096  # API character limit
+                    if len(combined_results) > max_audio_length:
+                        print(f"⚠️  Result text is too long ({len(combined_results)} chars), truncating for audio playback.")
+                        combined_results = combined_results[:max_audio_length]
+
+                    await speak_text(combined_results)
 
         asyncio.run(test_conversational())
 
