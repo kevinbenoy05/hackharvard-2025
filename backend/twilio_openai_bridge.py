@@ -16,6 +16,7 @@ import base64
 import json
 import os
 import queue
+import random
 import threading
 from typing import Any
 import math
@@ -77,38 +78,131 @@ def generate_thinking_tone(duration_seconds: float = 1.0, frequency: int = 440) 
     return bytes(audio_data)
 
 
-async def play_thinking_sound(callback, stream_sid: str):
-    """Play a brief thinking tone while AI generates response.
+async def play_thinking_sound_loop(callback, stream_sid: str, stop_event: asyncio.Event):
+    """Play thinking sound starting from a random position until stop_event is set.
     
-    To use a custom sound file instead:
-    1. Place a WAV file (8kHz, mono) named 'thinking.wav' in the backend directory
-    2. Uncomment the code below to load it
+    This plays the audio while AI processes the response, starting from a random
+    position in the file to add variety, then stops when the response is ready.
+    
+    Args:
+        callback: Function to send audio chunks to Twilio
+        stream_sid: Twilio stream ID
+        stop_event: Event that signals when to stop playing
     """
     try:
-        # Option 1: Use custom WAV file (uncomment to use)
+        # Load and prepare audio data once
         thinking_wav_path = "autumn.wav"
         if os.path.exists(thinking_wav_path):
             import wave
             with wave.open(thinking_wav_path, 'rb') as wav:
+                # Get WAV file properties
+                channels = wav.getnchannels()
+                sample_width = wav.getsampwidth()
+                framerate = wav.getframerate()
+                
+                print(f"[DEBUG] WAV file: {channels}ch, {framerate}Hz, {sample_width*8}bit")
+                
+                # Read all audio data
                 pcm_data = wav.readframes(wav.getnframes())
+                
+                # Convert stereo to mono if needed
+                if channels == 2:
+                    pcm_data = audioop.tomono(pcm_data, sample_width, 1, 1)
+                    print(f"[DEBUG] Converted stereo to mono")
+                
+                # Convert to 16-bit if not already
+                if sample_width != 2:
+                    if sample_width == 1:  # 8-bit
+                        pcm_data = audioop.lin2lin(pcm_data, 1, 2)
+                    elif sample_width == 4:  # 32-bit
+                        pcm_data = audioop.lin2lin(pcm_data, 4, 2)
+                    print(f"[DEBUG] Converted {sample_width*8}bit to 16bit")
+                
+                # Resample to 8kHz for Twilio (if not already)
+                if framerate != 8000:
+                    pcm_data, _ = audioop.ratecv(pcm_data, 2, 1, framerate, 8000, None)
+                    print(f"[DEBUG] Resampled {framerate}Hz to 8000Hz")
+                
+                # Reduce volume to 30% to prevent it being too loud
+                pcm_data = audioop.mul(pcm_data, 2, 0.3)
+                print(f"[DEBUG] Reduced volume to 30%")
         else:
+            print(f"[DEBUG] WAV file not found, using generated tone")
             # Fallback to generated tone
-            pcm_data = generate_thinking_tone(duration_seconds=0.3, frequency=440)
+            pcm_data = generate_thinking_tone(duration_seconds=3.0, frequency=440)
         
-        # Option 2: Generate a simple tone (current default)
-    #     pcm_data = generate_thinking_tone(duration_seconds=0.3, frequency=440)
+        # Convert to μ-law for Twilio once
+        mulaw_data = audioop.lin2ulaw(pcm_data, 2)
+        chunk_size = 160  # 20ms chunks at 8kHz
+        
+        # Pick a random starting position (aligned to chunk boundaries)
+        total_chunks = len(mulaw_data) // chunk_size
+        if total_chunks > 100:  # Only randomize if file is long enough (>2 seconds)
+            # Start somewhere in the first 80% of the file
+            max_start_chunk = int(total_chunks * 0.8)
+            start_chunk = random.randint(0, max_start_chunk)
+            start_byte = start_chunk * chunk_size
+            print(f"[DEBUG] Starting playback from {start_byte}/{len(mulaw_data)} bytes (chunk {start_chunk}/{total_chunks})")
+        else:
+            start_byte = 0
+            print(f"[DEBUG] Playing from beginning")
+        
+        # Play from the random start position until stopped
+        bytes_played = 0
+        for i in range(start_byte, len(mulaw_data), chunk_size):
+            if stop_event.is_set():
+                print(f"[DEBUG] Thinking sound stopped after {bytes_played} bytes")
+                return
+            
+            chunk = mulaw_data[i:i + chunk_size]
+            callback(chunk, stream_sid)
+            bytes_played += len(chunk)
+            await asyncio.sleep(0.02)  # 20ms between chunks
+        
+        print(f"[DEBUG] Thinking sound completed ({bytes_played} bytes played)")
+    except asyncio.CancelledError:
+        print(f"[DEBUG] Thinking sound cancelled")
+        raise
+    except Exception as e:
+        print(f"[ERROR] Failed to play thinking sound: {e}")
+
+
+async def play_ready_beep(callback, stream_sid: str):
+    """Play a short beep to signal the system is ready to listen again.
+    
+    Args:
+        callback: Function to send audio chunks to Twilio
+        stream_sid: Twilio stream ID
+    """
+    try:
+        # Generate a pleasant two-tone beep (like a notification sound)
+        # First tone: higher pitch, second tone: lower pitch
+        sample_rate = 8000
+        
+        # First beep: 800Hz for 0.1s
+        beep1 = generate_thinking_tone(duration_seconds=0.1, frequency=800)
+        # Brief silence: 0.05s
+        silence_samples = int(sample_rate * 0.05)
+        silence = bytes(silence_samples * 2)  # 16-bit silence
+        # Second beep: 600Hz for 0.1s
+        beep2 = generate_thinking_tone(duration_seconds=0.1, frequency=600)
+        
+        # Combine the beeps
+        pcm_data = beep1 + silence + beep2
         
         # Convert to μ-law for Twilio
         mulaw_data = audioop.lin2ulaw(pcm_data, 2)
         
         # Send in chunks
-        chunk_size = 160  # Small chunks for smooth playback
+        chunk_size = 160
         for i in range(0, len(mulaw_data), chunk_size):
             chunk = mulaw_data[i:i + chunk_size]
             callback(chunk, stream_sid)
-            await asyncio.sleep(0.02)  # 20ms between chunks
+            await asyncio.sleep(0.02)
+        
+        print(f"[DEBUG] Ready beep played")
     except Exception as e:
-        print(f"[ERROR] Failed to play thinking sound: {e}")
+        print(f"[ERROR] Failed to play ready beep: {e}")
 
 
 async def get_perplexity_response(messages: list[dict]) -> str:
@@ -185,28 +279,44 @@ async def text_to_speech_stream(text: str, callback, stream_sid: str) -> float:
             model="tts-1",
             voice="alloy",
             input=text,
-            response_format="pcm"  # 24kHz PCM16
+            response_format="pcm"  # 24kHz PCM16 mono
         )
         
         # Read the response content and process in chunks
         audio_data = response.content
-        chunk_size = 4096
+        total_bytes = len(audio_data)
         
-        for i in range(0, len(audio_data), chunk_size):
+        print(f"[DEBUG] TTS generated {total_bytes} bytes at 24kHz PCM16")
+        
+        # Process and stream audio in chunks
+        # Use smaller chunks for smoother playback
+        chunk_size = 3840  # Multiple of 160 for better alignment (160 * 24)
+        rate_state = None
+        
+        for i in range(0, total_bytes, chunk_size):
             chunk = audio_data[i:i + chunk_size]
             if chunk:
-                # Convert PCM 24kHz to μ-law 8kHz for Twilio
-                pcm8, _ = audioop.ratecv(chunk, 2, 1, 24000, 8000, None)
+                # Ensure chunk has even number of bytes (for 16-bit samples)
+                if len(chunk) % 2 != 0:
+                    chunk = chunk[:-1]
+                
+                # Convert PCM 24kHz to 8kHz for Twilio
+                pcm8, rate_state = audioop.ratecv(chunk, 2, 1, 24000, 8000, rate_state)
+                # Convert PCM to μ-law
                 mulaw = audioop.lin2ulaw(pcm8, 2)
+                
                 callback(mulaw, stream_sid)
+                
                 # Small delay to prevent overwhelming the connection
-                await asyncio.sleep(0.01)
+                # 20ms chunks for smooth playback
+                await asyncio.sleep(0.02)
         
         # Calculate audio duration: PCM16 at 24kHz, mono
         # Duration = total_samples / sample_rate
         # total_samples = total_bytes / bytes_per_sample
         # For PCM16: bytes_per_sample = 2
-        duration_seconds = len(audio_data) / (24000 * 2)
+        duration_seconds = total_bytes / (24000 * 2)
+        print(f"[DEBUG] TTS duration: {duration_seconds:.2f}s")
         return duration_seconds
     except Exception as e:
         print(f"[ERROR] TTS failed: {e}")
@@ -410,24 +520,38 @@ async def twilio_stream(ws: WebSocket) -> None:
                 # Add user message to history
                 conversation_history.append({"role": "user", "content": transcript})
                 
-                # Play a brief "thinking" tone to acknowledge we heard the user
-                # This fills the silence while we wait for Perplexity
+                # Start playing thinking sound in a loop (plays until we stop it)
+                stop_thinking = asyncio.Event()
+                thinking_task = None
                 if stream_sid:
-                    print("🔔 Playing thinking tone...")
-                    await play_thinking_sound(send_audio_to_twilio, stream_sid)
+                    print("🔔 Starting thinking sound loop...")
+                    thinking_task = asyncio.create_task(
+                        play_thinking_sound_loop(send_audio_to_twilio, stream_sid, stop_thinking)
+                    )
                 
-                # Get response from Perplexity
+                # Get response from Perplexity (while music plays in background)
                 print("🤖 Getting Perplexity response...")
                 perplexity_response = await get_perplexity_response(conversation_history)
                 print(f"[PERPLEXITY] {perplexity_response[:200]}...")  # Show preview
                 
-                # Simplify the response using OpenAI
+                # Simplify the response using OpenAI (music still playing)
                 print("✨ Simplifying response...")
                 simplified_response = await simplify_response(perplexity_response)
                 print(f"[SIMPLIFIED] {simplified_response}")
                 
                 # Add simplified response to history
                 conversation_history.append({"role": "assistant", "content": simplified_response})
+                
+                # NOW stop the thinking sound before playing TTS
+                if thinking_task:
+                    print("🛑 Stopping thinking sound...")
+                    stop_thinking.set()
+                    try:
+                        await asyncio.wait_for(thinking_task, timeout=1.0)
+                    except asyncio.TimeoutError:
+                        thinking_task.cancel()
+                    # Small pause to ensure clean transition
+                    await asyncio.sleep(0.1)
                 
                 # Convert to speech and stream back
                 if stream_sid:
@@ -437,8 +561,8 @@ async def twilio_stream(ws: WebSocket) -> None:
                     # Wait for the audio to finish playing before accepting new input
                     # Add a small buffer to account for network delays
                     print(f"⏳ Audio duration: {audio_duration:.1f}s - waiting for playback to complete...")
-                    await asyncio.sleep(audio_duration + 0.5)  # +0.5s buffer
-                    print("✓ Response complete - ready for next input")
+                    await asyncio.sleep(audio_duration)  # +0.5s buffer
+                    
             except Exception as e:
                 print(f"[ERROR] Failed to process response: {e}")
             finally:
