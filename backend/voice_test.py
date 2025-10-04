@@ -36,8 +36,8 @@ class TranscriptionConfig:
     prompt: str = "This is a customer support call about technical issues."
     language: str = "en"
     vad_threshold: float = 0.5
-    vad_prefix_padding_ms: int = 300
-    vad_silence_duration_ms: int = 500
+    vad_prefix_padding_ms: int = 500
+    vad_silence_duration_ms: int = 2000
 
 
 async def get_microphone_audio(shutdown_event: asyncio.Event) -> AsyncGenerator[bytes, None]:

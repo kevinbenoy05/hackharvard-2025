@@ -72,17 +72,20 @@ def main() -> None:
         asyncio.run(test_branched_tasks())
 
     elif choice == "4":
-        print("Testing conversational agent...\n")
+        print("Testing conversational agent with voice...\n")
 
         async def test_conversational() -> None:
             import warnings
             import logging
+            from browser_tasks import get_voice_input, speak_text
 
             # Suppress warnings
             warnings.filterwarnings("ignore")
             logging.getLogger().setLevel(logging.ERROR)
 
-            initial_query = input("Enter your vague task description: ").strip()
+            # Get initial query via voice
+            initial_query = await get_voice_input("Describe your task", debug=True)
+            print(f"📝 You said: {initial_query}\n")
 
             result = await run_conversational_task(
                 initial_query=initial_query,
@@ -95,7 +98,7 @@ def main() -> None:
             print("="*80)
             print(f"\n📝 Original query: {result['original_query']}")
             print(f"🎯 Refined task: {result['refined_task']}")
-            
+
             # Show parallelization info if available
             if result.get('parallelization_info'):
                 parallel_info = result['parallelization_info']
@@ -104,25 +107,35 @@ def main() -> None:
                     print(f"📋 Parallelization strategy: {parallel_info.get('reason', 'N/A')}")
                 else:
                     print(f"✨ Single agent execution: {parallel_info.get('reason', 'N/A')}")
-            
+
             print(f"✅ Success rate: {result['execution_result']['success_rate']:.0%}")
             print(f"⏱️  Total execution time: {result['execution_result']['total_time']:.2f}s")
 
             # Display results from all agents
+            results_text_parts = []
             if result['execution_result']['execution_results']:
                 print("\n💡 RESULTS:")
                 for i, exec_result in enumerate(result['execution_result']['execution_results'], 1):
                     if len(result['execution_result']['execution_results']) > 1:
                         print(f"\n--- Agent {i} ---")
-                    
+
                     if exec_result.success:
                         # Extract the final result text
                         final_text = exec_result.result.final_result()
                         print(final_text)
+                        results_text_parts.append(final_text)
                     else:
-                        print(f"❌ Failed: {exec_result.error}")
+                        error_msg = f"Agent {i} failed: {exec_result.error}"
+                        print(f"❌ {error_msg}")
+                        results_text_parts.append(error_msg)
 
             print("\n" + "="*80 + "\n")
+
+            # Speak the results
+            if results_text_parts:
+                print("🔊 Speaking results...\n")
+                combined_results = " ".join(results_text_parts)
+                await speak_text(combined_results)
 
         asyncio.run(test_conversational())
 
