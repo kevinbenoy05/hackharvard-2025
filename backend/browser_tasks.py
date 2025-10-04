@@ -9,12 +9,17 @@ import tempfile
 import uuid
 import contextlib
 import sys
+import base64
+import queue
+import signal
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, AsyncGenerator
 
 from browser_use import Agent, Browser, ChatGoogle, Tools
 from browser_use.agent.service import ActionResult
 from dotenv import load_dotenv
+import sounddevice as sd
+import websockets
 
 load_dotenv()
 
@@ -58,6 +63,221 @@ def verify_page_state(
 # Quiet/interactive controls via environment
 _QUIET_MODE = os.environ.get("QUIET", "0") == "1"
 _NON_INTERACTIVE = os.environ.get("NON_INTERACTIVE", "0") == "1"
+
+# Voice transcription configuration
+REALTIME_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
+SAMPLE_RATE = 16_000
+CHANNELS = 1
+FRAMES_PER_CHUNK = int(SAMPLE_RATE * 0.02)
+
+
+async def get_microphone_audio(shutdown_event: asyncio.Event) -> AsyncGenerator[bytes, None]:
+    """Yield raw PCM16 audio chunks from the system microphone until shutdown_event is set."""
+    audio_queue: queue.Queue[bytes] = queue.Queue()
+
+    def _callback(indata, _frames, _time, status):
+        if status:
+            print(f"[sounddevice] {status}", file=sys.stderr)
+        audio_queue.put(bytes(indata))
+
+    stream = sd.RawInputStream(
+        samplerate=SAMPLE_RATE,
+        blocksize=FRAMES_PER_CHUNK,
+        dtype="int16",
+        channels=CHANNELS,
+        callback=_callback,
+    )
+
+    with stream:
+        while not shutdown_event.is_set():
+            try:
+                chunk = await asyncio.to_thread(audio_queue.get, True, 0.1)
+            except queue.Empty:
+                continue
+            if chunk:
+                yield chunk
+
+
+async def stream_microphone_audio(
+    websocket: websockets.WebSocketClientProtocol,
+    shutdown_event: asyncio.Event,
+) -> None:
+    """Stream microphone audio to the realtime endpoint until shutdown_event is set."""
+    try:
+        async for audio_chunk in get_microphone_audio(shutdown_event):
+            audio_b64 = base64.b64encode(audio_chunk).decode("ascii")
+            payload = {
+                "type": "input_audio_buffer.append",
+                "audio": audio_b64,
+            }
+            await websocket.send(json.dumps(payload))
+            if shutdown_event.is_set():
+                break
+    finally:
+        shutdown_event.set()
+
+
+def build_session_update(prompt: str = "", language: str = "en", vad_threshold: float = 0.3) -> str:
+    """Create the session.update payload for configuring transcription."""
+    session_update = {
+        "type": "transcription_session.update",
+        "session": {
+            "input_audio_format": "pcm16",
+            "input_audio_transcription": {
+                "model": "gpt-4o-transcribe",
+                "prompt": prompt,
+                "language": language,
+            },
+            "turn_detection": {
+                "type": "server_vad",
+                "threshold": vad_threshold,  # Lower threshold = less sensitive to silence
+                "prefix_padding_ms": 500,
+                "silence_duration_ms": 2000,
+            },
+        },
+    }
+    return json.dumps(session_update)
+
+
+@contextlib.asynccontextmanager
+async def realtime_connection(api_key: str):
+    """Async context manager that yields an authenticated websocket connection."""
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "OpenAI-Beta": "realtime=v1",
+    }
+    websocket = await websockets.connect(REALTIME_URL, additional_headers=headers)
+    try:
+        yield websocket
+    finally:
+        await websocket.close()
+
+
+async def get_voice_input(prompt_text: str, debug: bool = False) -> str:
+    """Get voice input from the user and return transcribed text."""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY environment variable is not set.")
+
+    print(f"🎤 {prompt_text}")
+    print("   (Speak now, will auto-detect when you're done...)")
+
+    shutdown_event = asyncio.Event()
+    transcribed_text = ""
+    speech_started = False
+    speech_stopped = False
+
+    async with realtime_connection(api_key) as websocket:
+        await websocket.send(build_session_update("User responding to browser agent question.", vad_threshold=0.3))
+
+        audio_task = asyncio.create_task(
+            stream_microphone_audio(websocket, shutdown_event)
+        )
+
+        try:
+            while not shutdown_event.is_set():
+                try:
+                    message = await asyncio.wait_for(websocket.recv(), timeout=0.25)
+                except asyncio.TimeoutError:
+                    continue
+                except websockets.exceptions.ConnectionClosed:
+                    break
+
+                event = json.loads(message)
+                event_type = event.get("type")
+                if not event_type:
+                    continue
+
+                if debug:
+                    print(f"[DEBUG] Event: {event_type}")
+
+                # Track when speech starts and stops
+                if event_type == "input_audio_buffer.speech_started":
+                    speech_started = True
+                    if debug:
+                        print("[DEBUG] Speech started")
+                
+                elif event_type == "input_audio_buffer.speech_stopped":
+                    speech_stopped = True
+                    if debug:
+                        print("[DEBUG] Speech stopped, waiting for transcription...")
+                
+                # Only process transcription after speech has started AND stopped
+                elif event_type == "conversation.item.input_audio_transcription.completed":
+                    transcript = event.get("transcript")
+                    if debug:
+                        print(f"[DEBUG] Transcription received: {transcript}")
+                    
+                    if transcript and speech_started:
+                        # Accumulate transcription (in case there are multiple chunks)
+                        if transcribed_text:
+                            transcribed_text += " " + transcript
+                        else:
+                            transcribed_text = transcript
+                        
+                        # Only stop if we've had a proper speech start->stop cycle
+                        if speech_stopped:
+                            if debug:
+                                print("[DEBUG] Complete utterance detected, stopping")
+                            shutdown_event.set()
+
+                elif event_type == "error":
+                    print("Transcription error:", json.dumps(event, indent=2))
+        finally:
+            shutdown_event.set()
+            try:
+                await websocket.close()
+            except websockets.exceptions.ConnectionClosed:
+                pass
+            try:
+                await audio_task
+            except websockets.exceptions.ConnectionClosed:
+                pass
+
+    return transcribed_text.strip()
+
+
+async def speak_text(text: str) -> None:
+    """Convert text to speech and play it."""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY environment variable is not set.")
+
+    try:
+        import openai
+        client = openai.OpenAI(api_key=api_key)
+
+        # Generate speech using OpenAI TTS
+        response = client.audio.speech.create(
+            model="tts-1",
+            voice="alloy",
+            input=text
+        )
+
+        # Save to temporary file and play
+        import tempfile
+        import subprocess
+
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp_file:
+            tmp_file.write(response.content)
+            tmp_path = tmp_file.name
+
+        try:
+            # Play audio using system player
+            if sys.platform == "darwin":  # macOS
+                subprocess.run(["afplay", tmp_path], check=True)
+            elif sys.platform == "linux":
+                subprocess.run(["mpg123", tmp_path], check=True)
+            elif sys.platform == "win32":
+                subprocess.run(["start", tmp_path], shell=True, check=True)
+        finally:
+            # Clean up temp file
+            try:
+                os.unlink(tmp_path)
+            except:
+                pass
+    except Exception as e:
+        print(f"⚠️  Could not play audio: {e}")
 
 
 @contextlib.contextmanager
@@ -1122,11 +1342,15 @@ Respond with ONLY the JSON, no additional text."""
             # Generate question (may call tools and add to known_facts)
             question, new_facts = await self._generate_clarification_question_with_facts(conversation_context, round_num)
             known_facts.extend(new_facts)
-            
+
             if not _QUIET_MODE:
                 print(f"❓ {question}")
+                # Speak the question
+                await speak_text(question)
 
-            user_answer = input("👤 Your answer: ").strip()
+            # Get voice input from user
+            user_answer = await get_voice_input("Your answer", debug=True)
+            print(f"👤 You said: {user_answer}\n")
             qa_pairs.append((question, user_answer))
             if not _QUIET_MODE:
                 print()
