@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "browser-use",
+    "google-generativeai",
     "httpx",
     "langchain-groq",
     "langchain-openai>=0.3.34",
@@ -13,4 +14,5 @@ dependencies = [
     "openai",
     "python-dotenv",
     "sounddevice",
+    "websockets",
 ]
