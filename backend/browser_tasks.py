@@ -12,6 +12,7 @@ import sys
 import base64
 import queue
 import signal
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union, AsyncGenerator
 
@@ -20,11 +21,97 @@ from browser_use.agent.service import ActionResult
 from dotenv import load_dotenv
 import sounddevice as sd
 import websockets
+from bubus import EventBus as _PatchedEventBus
 
 load_dotenv()
 
 # Create enhanced tools with reflection capability
 enhanced_tools = Tools()
+
+
+# Raise the EventBus memory warning threshold so browser-use can retain richer history
+# without tripping the 50MB safeguard. Use env var BROWSER_EVENTBUS_MEMORY_WARN_MB to
+# customize (set to <=0 or inf to disable warnings entirely).
+_EVENTBUS_MEMORY_WARN_RAW = os.environ.get("BROWSER_EVENTBUS_MEMORY_WARN_MB", "inf")
+try:
+    _EVENTBUS_MEMORY_WARN_MB = float(_EVENTBUS_MEMORY_WARN_RAW)
+except ValueError:
+    _EVENTBUS_MEMORY_WARN_MB = float("inf")
+
+
+def _patched_eventbus_memory_check(self: _PatchedEventBus) -> None:
+    """Custom memory check using the configured warning threshold."""
+
+    import logging
+
+    if not math.isfinite(_EVENTBUS_MEMORY_WARN_MB) or _EVENTBUS_MEMORY_WARN_MB <= 0:
+        return
+
+    total_bytes = 0
+    bus_details: list[tuple[str, int, int, int]] = []
+
+    for bus in list(_PatchedEventBus.all_instances):
+        try:
+            bus_bytes = 0
+
+            for event in bus.event_history.values():
+                bus_bytes += sys.getsizeof(event)
+                if hasattr(event, "__dict__"):
+                    for value in event.__dict__.values():
+                        if isinstance(value, (str, bytes, list, dict, tuple, set)):
+                            bus_bytes += sys.getsizeof(value)
+
+            if bus.event_queue and hasattr(bus.event_queue, "_queue"):
+                queue_storage = bus.event_queue._queue  # type: ignore[attr-defined]
+                for queued_event in queue_storage:
+                    bus_bytes += sys.getsizeof(queued_event)
+                    if hasattr(queued_event, "__dict__"):
+                        for value in queued_event.__dict__.values():
+                            if isinstance(value, (str, bytes, list, dict, tuple, set)):
+                                bus_bytes += sys.getsizeof(value)
+
+            total_bytes += bus_bytes
+            bus_details.append(
+                (
+                    bus.name,
+                    bus_bytes,
+                    len(bus.event_history),
+                    bus.event_queue.qsize() if bus.event_queue else 0,
+                )
+            )
+        except Exception:
+            continue
+
+    total_mb = total_bytes / (1024 * 1024)
+    if total_mb <= _EVENTBUS_MEMORY_WARN_MB:
+        return
+
+    details: list[str] = []
+    for name, bytes_used, history_size, queue_size in sorted(bus_details, key=lambda entry: entry[1], reverse=True):
+        mb = bytes_used / (1024 * 1024)
+        if mb > 0.1:
+            details.append(f"  - {name}: {mb:.1f}MB (history={history_size}, queue={queue_size})")
+
+    warning_msg = (
+        f"\n⚠️  WARNING: Total EventBus memory usage is {total_mb:.1f}MB (> {_EVENTBUS_MEMORY_WARN_MB:.0f}MB limit)\n"
+        f"Active EventBus instances: {len(_PatchedEventBus.all_instances)}\n"
+    )
+
+    if details:
+        warning_msg += "Memory breakdown:\n" + "\n".join(details[:5])
+        if len(details) > 5:
+            warning_msg += f"\n  ... and {len(details) - 5} more"
+
+    warning_msg += "\nConsider:\n"
+    warning_msg += "  - Reducing max_history_size\n"
+    warning_msg += "  - Clearing completed EventBus instances with stop(clear=True)\n"
+    warning_msg += "  - Reducing event payload sizes\n"
+
+    logging.getLogger("bubus").warning(warning_msg)
+
+
+if hasattr(_PatchedEventBus, "_check_total_memory_usage"):
+    _PatchedEventBus._check_total_memory_usage = _patched_eventbus_memory_check
 
 
 @enhanced_tools.action(
