@@ -1,0 +1,36 @@
+{
+    "cookies": [
+        {
+            "name": "NID",
+            "value": "525=QSnYnYI2zGPRtO7qSk2-N01ObfrIDCegrnh8BiCKOxiipC85XArJBZ6g6GfEWyEjXo89UeLfaYWOUuBxtTqsBriyjAefNyqrW5CsEYLa_3kOROmGm43F7iSmg62u3qka50K8wu_hyQgJDUmKL1oN7My-gN44kLDtCcFBC_2Qp8hyQvyyCOS35m123mFhgh5-aIVo0g",
+            "domain": ".google.com",
+            "path": "/",
+            "expires": 1775401533.61509,
+            "size": 205,
+            "httpOnly": true,
+            "secure": true,
+            "session": false,
+            "sameSite": "None",
+            "priority": "Medium",
+            "sameParty": false,
+            "sourceScheme": "Secure",
+            "sourcePort": 443
+        },
+        {
+            "name": "test",
+            "value": "value123",
+            "domain": "httpbin.org",
+            "path": "/",
+            "expires": -1,
+            "size": 12,
+            "httpOnly": false,
+            "secure": false,
+            "session": true,
+            "priority": "Medium",
+            "sameParty": false,
+            "sourceScheme": "Secure",
+            "sourcePort": 443
+        }
+    ],
+    "origins": []
+}

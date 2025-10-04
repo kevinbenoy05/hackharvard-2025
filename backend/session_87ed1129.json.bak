@@ -1,0 +1,35 @@
+{
+    "cookies": [
+        {
+            "name": "test_session",
+            "value": "abc123",
+            "domain": "httpbin.org",
+            "path": "/",
+            "expires": -1,
+            "size": 18,
+            "httpOnly": false,
+            "secure": false,
+            "session": true,
+            "priority": "Medium",
+            "sameParty": false,
+            "sourceScheme": "Secure",
+            "sourcePort": 443
+        },
+        {
+            "name": "NID",
+            "value": "525=HOhd5Q9BQckZz55MdRd1t1s_GpbrQrHqtilhkffHhhXS0kMNJ758Aj22XsFzTLXrRtv206SxpU8fvd2U5KBGDaZBfZyWJBDNKvgpPfBi8kTPKxrbveQUmEXz-Tav_ChOWR6UA6gVKw8mcQuKVmSOJDHzFTfyO5IO0uREKrNoCHI0BZxKwbHQ15K3LI0SCjFXJs_Htw",
+            "domain": ".google.com",
+            "path": "/",
+            "expires": 1775402920.798606,
+            "size": 205,
+            "httpOnly": true,
+            "secure": false,
+            "session": false,
+            "priority": "Medium",
+            "sameParty": false,
+            "sourceScheme": "Secure",
+            "sourcePort": 443
+        }
+    ],
+    "origins": []
+}
