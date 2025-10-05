@@ -16,8 +16,9 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union, AsyncGenerator
 
-from browser_use import Agent, Browser, ChatGoogle, Tools
+from browser_use import Agent, Browser, ChatGoogle
 from browser_use.agent.service import ActionResult
+from browser_use import Tools
 from dotenv import load_dotenv
 import sounddevice as sd
 import websockets
@@ -428,7 +429,7 @@ class ParallelExecutionResult:
 class BrowserConfig:
     """Browser configuration for agents."""
     cdp_url: Optional[str] = None  # URL to connect to existing Chrome instance
-    headless: bool = True
+    headless: bool = False
     storage_state: Optional[str] = None
     separate_profiles: bool = True
     profile_prefix: str = "temp_agent"
