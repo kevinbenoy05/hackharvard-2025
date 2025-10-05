@@ -1,4 +1,4 @@
-"""Twilio media stream bridge with Perplexity AI, OpenAI, and Browser Automation.
+"""Twilio media stream bridge with Perplexity AI, OpenRouter, OpenAI, and Browser Automation.
 
 This bridge creates an intelligent phone assistant:
 1. Receives audio from Twilio phone calls
@@ -7,7 +7,7 @@ This bridge creates an intelligent phone assistant:
    - Use browser automation for interactive tasks (booking flights, filling forms)
    - Use Perplexity AI for quick information queries (facts, news, weather)
 4. Generates responses using the chosen method
-5. Simplifies responses using OpenAI GPT-4o-mini for natural conversation
+5. Simplifies responses using OpenRouter's openai/gpt-oss-120b for natural conversation
 6. Converts simplified responses to speech using OpenAI TTS
 7. Plays back AI voice responses to the caller
 
@@ -44,15 +44,39 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-realtime-preview-2024-12-17")
 PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
 
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-oss-120b")
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+
 if not OPENAI_API_KEY:
     raise RuntimeError("Set OPENAI_API_KEY before starting the bridge.")
+if not OPENROUTER_API_KEY:
+    raise RuntimeError("Set OPENROUTER_API_KEY before starting the bridge.")
 if not PERPLEXITY_API_KEY:
     raise RuntimeError("Set PERPLEXITY_API_KEY before starting the bridge.")
 
 app = FastAPI()
 
-# Initialize OpenAI client for TTS
+# Initialize OpenAI client for TTS / realtime APIs
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+
+# Dedicated OpenRouter client for chat completions
+openrouter_headers: dict[str, str] = {}
+http_referer = os.getenv("OPENROUTER_HTTP_REFERER")
+if http_referer:
+    openrouter_headers["HTTP-Referer"] = http_referer
+app_title = os.getenv("OPENROUTER_APP_TITLE")
+if app_title:
+    openrouter_headers["X-Title"] = app_title
+
+openrouter_client_kwargs: dict[str, Any] = {
+    "base_url": OPENROUTER_BASE_URL,
+    "api_key": OPENROUTER_API_KEY,
+}
+if openrouter_headers:
+    openrouter_client_kwargs["default_headers"] = openrouter_headers
+
+openrouter_client = AsyncOpenAI(**openrouter_client_kwargs)
 
 
 def generate_thinking_tone(duration_seconds: float = 1.0, frequency: int = 440) -> bytes:
@@ -250,7 +274,7 @@ async def get_perplexity_response(messages: list[dict]) -> str:
 
 
 async def clarify_user_query(raw_query: str) -> str:
-    """Use GPT-4o to clarify and improve voice transcription queries.
+    """Use OpenRouter completions to clarify and improve voice transcription queries.
     
     Args:
         raw_query: Raw voice transcription that might have errors or unclear phrasing
@@ -264,8 +288,8 @@ async def clarify_user_query(raw_query: str) -> str:
         return raw_query
     
     try:
-        response = await openai_client.chat.completions.create(
-            model="gpt-5-mini",  # Use gpt-5-mini instead of non-existent gpt-5
+        response = await openrouter_client.chat.completions.create(
+            model=OPENROUTER_MODEL,
             messages=[
                 {
                     "role": "system",
@@ -345,8 +369,8 @@ async def decide_use_browser(query: str) -> bool:
         return True
     
     try:
-        response = await openai_client.chat.completions.create(
-            model="gpt-5-mini",
+        response = await openrouter_client.chat.completions.create(
+            model=OPENROUTER_MODEL,
             messages=[
                 {
                     "role": "system",
@@ -388,10 +412,10 @@ Respond with ONLY 'BROWSER' or 'PERPLEXITY' - nothing else."""
 
 
 async def simplify_response(text: str) -> str:
-    """Use OpenAI to simplify and shorten a response for phone conversation."""
+    """Use OpenRouter to simplify and shorten a response for phone conversation."""
     try:
-        response = await openai_client.chat.completions.create(
-            model="gpt-5-mini",
+        response = await openrouter_client.chat.completions.create(
+            model=OPENROUTER_MODEL,
             messages=[
                 {
                     "role": "system",
