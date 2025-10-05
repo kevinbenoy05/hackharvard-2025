@@ -1,0 +1,9 @@
+chcp 65001
+ensure FFPMEG is installed for windolws
+opem venv
+
+
+"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir=""C:\Users\kevin\Projects\hackharvard-2025\chrome-profile"
+
+
+run file

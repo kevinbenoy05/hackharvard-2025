@@ -91,7 +91,9 @@ def main() -> None:
                 initial_query=initial_query,
                 max_steps=20,
                 headless=False,
-                enable_parallel_agents=False,
+                enable_parallel_agents=True,
+                use_existing_chrome=True,  # NEW: Use your logged-in Chrome!
+                cdp_url="http://localhost:9222",  # NEW: CDP port
             )
 
             print("\n" + "="*80)
