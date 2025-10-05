@@ -16,8 +16,9 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union, AsyncGenerator
 
-from browser_use import Agent, Browser, ChatGoogle, Tools
+from browser_use import Agent, Browser, ChatGoogle
 from browser_use.agent.service import ActionResult
+from browser_use import Tools
 from dotenv import load_dotenv
 import sounddevice as sd
 import websockets
@@ -428,7 +429,7 @@ class ParallelExecutionResult:
 class BrowserConfig:
     """Browser configuration for agents."""
     cdp_url: Optional[str] = None  # URL to connect to existing Chrome instance
-    headless: bool = True
+    headless: bool = False
     storage_state: Optional[str] = None
     separate_profiles: bool = True
     profile_prefix: str = "temp_agent"
@@ -521,14 +522,24 @@ class ParallelBrowserSDK:
 
     def _create_browser(self, config: BrowserConfig, agent_id: str) -> Browser:
         """Create browser instance based on configuration."""
-        # NEW: Check if we should connect to existing Chrome session
-        print("Checking for open browser...")
+        # Check if we should connect to existing Chrome session
         if hasattr(config, 'cdp_url') and config.cdp_url:
-            return Browser(
-                cdp_url=config.cdp_url,  # Connect to existing Chrome
-                headless=False,  # Must be False when using CDP
-            )
-        print("No open browser found, launching new guest window...")
+            if not _QUIET_MODE:
+                print(f"🔗 Connecting to existing Chrome at {config.cdp_url}...")
+            try:
+                return Browser(
+                    cdp_url=config.cdp_url,  # Connect to existing Chrome
+                    headless=False,  # Must be False when using CDP
+                )
+            except Exception as e:
+                if not _QUIET_MODE:
+                    print(f"⚠️  Failed to connect to Chrome at {config.cdp_url}: {e}")
+                    print(f"💡 Make sure Chrome is running with: chrome --remote-debugging-port=9222")
+                raise
+        
+        if not _QUIET_MODE:
+            print("🚀 Launching new browser instance...")
+        
         if config.storage_state:
             temp_profile_dir = tempfile.mkdtemp(prefix="tmp-browser-use-profile-")
             config.temp_user_data_dirs.append(temp_profile_dir)
@@ -737,6 +748,8 @@ async def run_parallel_tasks(
     headless: bool = True,
     llm_api_key: Optional[str] = None,
     enable_smart_mode: bool = True,
+    use_existing_chrome: bool = False,
+    cdp_url: str = "http://localhost:9222",
 ) -> Dict[str, Any]:
     """Simple function to run multiple tasks in parallel with separate profiles.
     
@@ -746,6 +759,8 @@ async def run_parallel_tasks(
         headless: Run browsers in headless mode
         llm_api_key: Optional Google API key
         enable_smart_mode: Enable enhanced intelligence with reflection and self-correction
+        use_existing_chrome: Connect to existing Chrome instance via CDP
+        cdp_url: CDP URL for existing Chrome instance (default: http://localhost:9222)
     """
 
     sdk = ParallelBrowserSDK(llm_api_key=llm_api_key)
@@ -759,7 +774,15 @@ async def run_parallel_tasks(
         else:
             tasks.append(ParallelTask(task_description=desc, max_steps=max_steps))
 
-    config = BrowserConfig(headless=headless, separate_profiles=True)
+    # Configure browser to use existing Chrome if requested
+    if use_existing_chrome:
+        config = BrowserConfig(
+            cdp_url=cdp_url,
+            headless=False,  # Must be False when using CDP
+            separate_profiles=False
+        )
+    else:
+        config = BrowserConfig(headless=headless, separate_profiles=True)
 
     return await sdk.execute_parallel(tasks, config)
 
@@ -1411,7 +1434,7 @@ Respond with ONLY the JSON, no additional text."""
         max_steps: int = 70,
         headless: bool = True,
         enable_parallel_agents: bool = True,
-        use_existing_chrome: bool = False,  # NEW: Flag to use existing Chrome session
+        use_existing_chrome: bool = True,  # NEW: Flag to use existing Chrome session
         cdp_url: str = "http://localhost:9222", # NEW: CDP URL for existing Chrome
         
     ) -> Dict[str, Any]:
@@ -1534,7 +1557,7 @@ async def run_conversational_task(
     headless: bool = True,
     llm_api_key: Optional[str] = None,
     enable_parallel_agents: bool = True,
-    use_existing_chrome: bool = False,  #  Flag to use existing Chrome session
+    use_existing_chrome: bool = True,  #  Flag to use existing Chrome session
     cdp_url: str = "http://localhost:9222",  # CDP URL for existing Chrome
 ) -> Dict[str, Any]:
     """Convenience function to run a conversational browser task.
