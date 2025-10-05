@@ -258,9 +258,14 @@ async def clarify_user_query(raw_query: str) -> str:
     Returns:
         str: Clarified, actionable query
     """
+    # If query is empty or too short, return as-is
+    if not raw_query or len(raw_query.strip()) < 3:
+        print(f"[CLARIFIED] Query too short, using original: '{raw_query}'")
+        return raw_query
+    
     try:
         response = await openai_client.chat.completions.create(
-            model="gpt-5",
+            model="gpt-5-mini",  # Use gpt-5-mini instead of non-existent gpt-5
             messages=[
                 {
                     "role": "system",
@@ -275,6 +280,7 @@ Guidelines:
 - Keep the user's intent intact
 - If it's already clear, don't change it much
 - Output should be a single clear sentence or short instruction
+- NEVER return an empty response - always return a valid query
 
 Examples:
 Input: "um can you like make an account on leachess dot org"
@@ -286,6 +292,9 @@ Output: "Search for browser automation"
 Input: "what's the weather in New York"
 Output: "What's the weather in New York?"
 
+Input: "Go to gmail.com"
+Output: "Go to gmail.com"
+
 Respond with ONLY the clarified query - nothing else."""
                 },
                 {
@@ -293,10 +302,15 @@ Respond with ONLY the clarified query - nothing else."""
                     "content": raw_query
                 }
             ],
-            temperature=0.3,
-            max_tokens=100
+            max_completion_tokens=100
         )
-        clarified = response.choices[0].message.content.strip()
+        clarified = response.choices[0].message.content.strip() if response.choices[0].message.content else raw_query
+        
+        # Validate that clarified is not empty
+        if not clarified or len(clarified.strip()) < 3:
+            print(f"[CLARIFIED] Got empty response, using original: '{raw_query}'")
+            return raw_query
+        
         print(f"[CLARIFIED] '{raw_query}' → '{clarified}'")
         return clarified
     except Exception as e:
@@ -310,20 +324,42 @@ async def decide_use_browser(query: str) -> bool:
     Returns:
         bool: True if browser is needed, False to use Perplexity
     """
+    # If query is empty or too short, default to Perplexity
+    if not query or len(query.strip()) < 3:
+        print(f"[DECISION] Query too short, defaulting to PERPLEXITY")
+        return False
+    
+    # Quick keyword-based detection for obvious browser tasks
+    browser_keywords = [
+        'go to', 'navigate to', 'open', 'visit',
+        'gmail', 'youtube', 'twitter', 'facebook',
+        'book', 'buy', 'purchase', 'order',
+        'login', 'log in', 'sign in', 'create account',
+        'fill out', 'submit', 'click',
+        '.com', '.org', '.net', '.edu'
+    ]
+    
+    query_lower = query.lower()
+    if any(keyword in query_lower for keyword in browser_keywords):
+        print(f"[DECISION] Query: '{query}' -> BROWSER (keyword match)")
+        return True
+    
     try:
         response = await openai_client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5-mini",
             messages=[
                 {
                     "role": "system",
                     "content": """You decide if a query needs browser automation or can be answered by web search (Perplexity).
 
 USE BROWSER for:
+- Navigating to websites (e.g., "go to gmail.com", "open YouTube")
 - Booking/purchasing (flights, hotels, tickets)
 - Interactive tasks (filling forms, clicking buttons)
 - Tasks requiring multiple steps on websites
 - Comparing specific products/prices across sites
 - Creating accounts or logging in
+- Any task that involves interacting with a specific website
 
 USE PERPLEXITY (web search) for:
 - General knowledge questions
@@ -355,7 +391,7 @@ async def simplify_response(text: str) -> str:
     """Use OpenAI to simplify and shorten a response for phone conversation."""
     try:
         response = await openai_client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5-mini",
             messages=[
                 {
                     "role": "system",
@@ -366,7 +402,6 @@ async def simplify_response(text: str) -> str:
                     "content": f"Simplify this response for a phone call:\n\n{text}"
                 }
             ],
-            temperature=0.3,
             max_tokens=150
         )
         simplified = response.choices[0].message.content
@@ -595,6 +630,10 @@ async def twilio_stream(ws: WebSocket) -> None:
     # 3. TTS audio is fully played back to the caller
     is_processing = False
     
+    # Track ongoing tasks to cancel on hangup
+    current_processing_task: asyncio.Task | None = None
+    call_ended = asyncio.Event()
+    
     # Callback to send audio back to Twilio
     def send_audio_to_twilio(mulaw_audio: bytes, sid: str):
         """Send audio back to Twilio (called from TTS thread)."""
@@ -618,7 +657,12 @@ async def twilio_stream(ws: WebSocket) -> None:
     # Callback when transcription is received
     def on_transcription(transcript: str):
         """Handle incoming transcription from user."""
-        nonlocal is_processing
+        nonlocal is_processing, current_processing_task
+        
+        if call_ended.is_set():
+            print(f"[IGNORED] '{transcript}' (Call ended)")
+            return
+            
         if is_processing:
             print(f"[IGNORED] '{transcript}' (AI is speaking)")
             return  # Skip if already processing - AI is thinking or speaking
@@ -628,6 +672,10 @@ async def twilio_stream(ws: WebSocket) -> None:
         async def process_and_respond():
             nonlocal is_processing
             try:
+                # Check if call ended before starting
+                if call_ended.is_set():
+                    print("[CANCELLED] Call ended before processing started")
+                    return
                 # Start playing thinking sound in a loop (plays until we stop it)
                 stop_thinking = asyncio.Event()
                 thinking_task = None
@@ -640,11 +688,19 @@ async def twilio_stream(ws: WebSocket) -> None:
                 # Step 1: Clarify the user's query using GPT-4o
                 clarified_query = await clarify_user_query(transcript)
                 
+                if call_ended.is_set():
+                    print("[CANCELLED] Call ended during query clarification")
+                    return
+                
                 # Add clarified query to history
                 conversation_history.append({"role": "user", "content": clarified_query})
                 
                 # Step 2: Decide whether to use browser or Perplexity
                 use_browser = await decide_use_browser(clarified_query)
+                
+                if call_ended.is_set():
+                    print("[CANCELLED] Call ended during decision making")
+                    return
                 
                 if use_browser:
                     # Use browser automation for interactive tasks
@@ -654,9 +710,15 @@ async def twilio_stream(ws: WebSocket) -> None:
                         browser_result = await run_parallel_tasks(
                             task_descriptions=[clarified_query],
                             max_steps=15,
-                            headless=True,
-                            enable_smart_mode=True
+                            headless=False,  # Show browser for debugging
+                            enable_smart_mode=True,
+                            use_existing_chrome=True,  # Connect to existing Chrome
+                            cdp_url="http://localhost:9222"  # CDP debugging port
                         )
+                        
+                        if call_ended.is_set():
+                            print("[CANCELLED] Call ended during browser automation")
+                            return
                         
                         # Extract result from browser execution
                         if browser_result.get("successful_count", 0) > 0:
@@ -765,12 +827,35 @@ async def twilio_stream(ws: WebSocket) -> None:
                 client.send_audio(pcm24)
 
             elif event == "stop":
-                print("📞 Call ended\n")
+                print("📞 Call ended - cancelling ongoing tasks\n")
+                
+                # Signal that call has ended
+                call_ended.set()
+                
+                # Cancel any ongoing processing task
+                if current_processing_task and not current_processing_task.done():
+                    print("🛑 Cancelling ongoing browser/AI task...")
+                    current_processing_task.cancel()
+                    try:
+                        # Wait briefly for cancellation
+                        await asyncio.wait_for(asyncio.wrap_future(current_processing_task), timeout=2.0)
+                    except (asyncio.TimeoutError, asyncio.CancelledError):
+                        print("✅ Task cancelled")
+                    except Exception as e:
+                        print(f"⚠️  Task cancellation warning: {e}")
+                
                 # Commit any remaining audio for transcription
                 client.commit_audio()
                 break
 
     except WebSocketDisconnect:
         print("[ERROR] Client disconnected unexpectedly")
+        # Signal call ended and cancel any ongoing tasks
+        call_ended.set()
+        if current_processing_task and not current_processing_task.done():
+            print("🛑 Cancelling ongoing task due to disconnect...")
+            current_processing_task.cancel()
     finally:
+        # Ensure call_ended is set
+        call_ended.set()
         client.close()
