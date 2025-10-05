@@ -16,7 +16,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union, AsyncGenerator
 
-from browser_use import Agent, Browser, ChatGoogle
+from browser_use import Agent, Browser, ChatOpenAI
 from browser_use.agent.service import ActionResult
 from browser_use import Tools
 from dotenv import load_dotenv
@@ -510,14 +510,28 @@ async def _export_storage_state(agent: Agent) -> Dict[str, Any]:
 class ParallelBrowserSDK:
     """SDK for executing browser tasks in parallel."""
 
-    def __init__(self, llm_api_key: Optional[str] = None, llm_model: str = "gemini-2.5-flash") -> None:
-        self.llm_api_key = llm_api_key or os.environ.get("GOOGLE_API_KEY")
+    def __init__(
+        self,
+        llm_api_key: Optional[str] = None,
+        llm_model: str = "openai/gpt-oss-120b:nitro",
+        llm_base_url: Optional[str] = None,
+    ) -> None:
+        self.llm_api_key = llm_api_key or os.environ.get("OPENROUTER_API_KEY")
         self.llm_model = llm_model
+        self.llm_base_url = llm_base_url or os.environ.get(
+            "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
+        )
 
-    def _create_llm(self) -> ChatGoogle:
+    def _create_llm(self) -> ChatOpenAI:
         """Create LLM instance."""
         with _suppress_native_stderr():
-            llm = ChatGoogle(model=self.llm_model, api_key=self.llm_api_key)
+            llm_kwargs: dict[str, object] = {"model": self.llm_model}
+            if self.llm_api_key:
+                llm_kwargs["api_key"] = self.llm_api_key
+            if self.llm_base_url:
+                llm_kwargs["base_url"] = self.llm_base_url
+
+            llm = ChatOpenAI(**llm_kwargs)
         return llm
 
     def _create_browser(self, config: BrowserConfig, agent_id: str) -> Browser:
@@ -566,7 +580,7 @@ class ParallelBrowserSDK:
         agent: Agent,
         task: ParallelTask,
         browser_config: BrowserConfig,
-        llm: ChatGoogle,
+        llm: ChatOpenAI,
     ) -> Any:
         """Execute a single task with retry logic for CDP errors."""
 

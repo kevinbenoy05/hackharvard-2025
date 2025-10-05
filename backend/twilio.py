@@ -24,6 +24,7 @@ import threading
 from typing import Any
 import math
 import struct
+from urllib.parse import urlparse, urlunparse
 
 import audioop
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
@@ -40,16 +41,28 @@ os.environ["NON_INTERACTIVE"] = "1"
 os.environ["QUIET"] = "1"
 
 from browser_tasks import run_parallel_tasks
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+PRIMARY_OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY")
+OPENAI_API_KEY = PRIMARY_OPENAI_API_KEY or CEREBRAS_API_KEY
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-realtime-preview-2024-12-17")
 PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
+
+OPENAI_BASE_URL = (
+    os.getenv("OPENAI_BASE_URL")
+    or os.getenv("OPENAI_API_BASE")
+    or os.getenv("CEREBRAS_BASE_URL")
+)
+OPENAI_ORGANIZATION = os.getenv("OPENAI_ORG") or os.getenv("OPENAI_ORGANIZATION")
+OPENAI_PROJECT = os.getenv("OPENAI_PROJECT")
+OPENAI_REALTIME_URL = os.getenv("OPENAI_REALTIME_URL")
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-oss-120b")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 
 if not OPENAI_API_KEY:
-    raise RuntimeError("Set OPENAI_API_KEY before starting the bridge.")
+    raise RuntimeError("Set OPENAI_API_KEY or CEREBRAS_API_KEY before starting the bridge.")
 if not OPENROUTER_API_KEY:
     raise RuntimeError("Set OPENROUTER_API_KEY before starting the bridge.")
 if not PERPLEXITY_API_KEY:
@@ -57,8 +70,51 @@ if not PERPLEXITY_API_KEY:
 
 app = FastAPI()
 
+def _build_async_openai_client(**override_kwargs: Any) -> AsyncOpenAI:
+    """Create an AsyncOpenAI client honoring shared OSS configuration."""
+
+    client_kwargs: dict[str, Any] = {"api_key": OPENAI_API_KEY}
+
+    if OPENAI_BASE_URL:
+        client_kwargs["base_url"] = OPENAI_BASE_URL.rstrip("/")
+
+    if OPENAI_ORGANIZATION:
+        client_kwargs["organization"] = OPENAI_ORGANIZATION
+
+    if OPENAI_PROJECT:
+        client_kwargs["project"] = OPENAI_PROJECT
+
+    client_kwargs.update(override_kwargs)
+    return AsyncOpenAI(**client_kwargs)
+
+
+def _build_openai_realtime_url(model: str) -> str:
+    """Construct realtime websocket URL compatible with custom OSS endpoints."""
+
+    template = OPENAI_REALTIME_URL
+    if template:
+        if "{model}" in template:
+            return template.format(model=model)
+        joiner = "&" if "?" in template else "?"
+        return f"{template}{joiner}model={model}"
+
+    if OPENAI_BASE_URL:
+        parsed = urlparse(OPENAI_BASE_URL.rstrip("/"))
+        scheme = "wss" if parsed.scheme == "https" else "ws"
+        path = parsed.path.rstrip("/")
+        if path:
+            if not path.startswith("/"):
+                path = f"/{path}"
+            path = f"{path}/realtime"
+        else:
+            path = "/realtime"
+        return urlunparse((scheme, parsed.netloc, path, "", f"model={model}", ""))
+
+    return f"wss://api.openai.com/v1/realtime?model={model}"
+
+
 # Initialize OpenAI client for TTS / realtime APIs
-openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+openai_client = _build_async_openai_client()
 
 # Dedicated OpenRouter client for chat completions
 openrouter_headers: dict[str, str] = {}
@@ -529,7 +585,7 @@ class OpenAIRealtimeClient:
         self._send_queue: "queue.Queue[str | None]" = queue.Queue()
 
     def start(self) -> None:
-        url = f"wss://api.openai.com/v1/realtime?model={self.model}"
+        url = _build_openai_realtime_url(self.model)
         headers = [
             f"Authorization: Bearer {self.api_key}",
             "OpenAI-Beta: realtime=v1",

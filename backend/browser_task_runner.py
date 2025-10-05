@@ -3,10 +3,35 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Optional
 from dotenv import load_dotenv
 load_dotenv()
 from browser_use import Agent, Browser, ChatOpenAI
+
+
+def _build_llm(model: str) -> ChatOpenAI:
+    """Instantiate ChatOpenAI aligned with our OpenAI SDK configuration."""
+
+    llm_kwargs: dict[str, object] = {"model": model}
+
+    api_key = os.getenv("OPENAI_API_KEY") or os.getenv("CEREBRAS_API_KEY")
+    if api_key:
+        llm_kwargs["api_key"] = api_key
+
+    base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE") or os.getenv("CEREBRAS_BASE_URL")
+    if base_url:
+        llm_kwargs["base_url"] = base_url
+
+    organization = os.getenv("OPENAI_ORG") or os.getenv("OPENAI_ORGANIZATION")
+    if organization:
+        llm_kwargs["organization"] = organization
+
+    project = os.getenv("OPENAI_PROJECT")
+    if project:
+        llm_kwargs["project"] = project
+
+    return ChatOpenAI(**llm_kwargs)
 
 
 def run_browser_task(
@@ -34,7 +59,7 @@ def run_browser_task(
 
     async def _execute() -> None:
         browser = Browser(headless=headless)
-        agent = Agent(task=task, browser=browser, llm=ChatOpenAI(model=model))
+        agent = Agent(task=task, browser=browser, llm=_build_llm(model))
 
         try:
             if max_steps is None:
